@@ -7,7 +7,7 @@
 // this way per binary. Declared here so Swift can pass them to
 // UniRT.registerStaticPlugin without a bespoke bridging header.
 
-#include "../../../../sdk/include/unirt.h"
+#include "unirt.h"
 
 extern unirt_PluginId unirt_plugin_id(void);
 extern unirt_PluginTable* unirt_plugin_open(void);
