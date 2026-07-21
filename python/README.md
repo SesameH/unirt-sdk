@@ -1,0 +1,63 @@
+# unirt (Python binding)
+
+Python binding for the UniRT SDK — run LLMs locally through a single API with
+interchangeable backends:
+
+| runtime     | models                                               | hardware                    |
+|-------------|------------------------------------------------------|-----------------------------|
+| `llama_cpp` | GGUF                                                 | CPU / Metal / Vulkan / CUDA |
+| `mlx`       | HF safetensors (validated SmolLM2-style Llama/ByteLevel-BPE layout; dense or MLX-quantized) | Apple Silicon Metal GPU |
+| `onnxruntime` | ONNX encoder embeddings                         | CPU / Apple Core ML     |
+
+The bundled llama_cpp runtime supports GGUF VLMs through libmtmd when an
+mmproj is present. MLX remains text-only and fails explicitly for VLM models.
+MLX also requires a usable Metal device; if none is visible, model loading
+fails before native model allocation.
+
+## Usage
+
+```python
+from unirt.auto import AutoModelForCausalLM
+
+model = AutoModelForCausalLM.from_pretrained(
+    'bartowski/SmolLM2-135M-Instruct-GGUF',
+    precision='Q4_K_M',
+    device_map='llama_cpp',
+)
+out = model.generate(prompt, max_new_tokens=128, temperature=0.7)
+print(out.text)
+model.close()
+```
+
+Embedding repositories select an ONNX variant and tokenizer sidecars without
+downloading the PyTorch checkpoint:
+
+```python
+from unirt import AutoModelForEmbedding
+
+with AutoModelForEmbedding.from_pretrained(
+    'sentence-transformers/all-MiniLM-L6-v2',
+    device_map='cpu',  # or 'coreml' on Apple Silicon
+) as model:
+    vectors = model.encode(['a cat on a mat', 'a kitten on a rug'])
+    print(len(vectors), len(vectors[0]))  # 2, 384
+```
+
+Repository ids are inspected and downloaded with `huggingface_hub`. GGUF
+repositories download only the selected quantization (including all of its
+shards) plus tokenizer/config sidecars. The default cache is
+`~/.cache/unirt`; set `UNIRT_DATADIR` to move it and `UNIRT_HFTOKEN` for gated
+or private repositories.
+
+Generation is stateless by default (`n_past=0` clears prior KV state before
+prefilling the supplied prompt). To continue from a known cached prefix, pass
+the exact prefix length through `n_past`; invalid values are rejected rather
+than silently duplicating context.
+
+The native library is closed-source and ships prebuilt: a wheel from this
+repo's [Releases](../../../releases) already bundles it under `unirt/lib/`;
+installing from source instead, populate that directory yourself from a
+Release's native-libs archive before `pip install .`. Set `UNIRT_LIB_PATH` /
+`UNIRT_PLUGIN_PATH` to point elsewhere. See the top-level README for the
+interactive chat example and the OpenAI-compatible server
+(`python3 -m unirt.server`).

@@ -1,0 +1,5 @@
+module CUniRT [system] {
+    header "unirt.h"
+    header "plugin_entrypoints.h"
+    export *
+}

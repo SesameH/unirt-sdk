@@ -1,0 +1,28 @@
+# Prebuilt native binaries — populated per release by the private core
+# repo's publish workflow, not checked in as source. Grab them from this
+# repo's GitHub Releases instead of building locally, unless you're
+# iterating on the wrapper source itself.
+python/unirt/lib/
+android/prebuilt/
+ios/UniRT.xcframework/
+
+# Python build artifacts
+build/
+dist/
+*.egg-info/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Android
+.gradle/
+.cxx/
+local.properties
+android/build/
+
+# Editors & OS
+.DS_Store
+.idea/
+.vscode/
