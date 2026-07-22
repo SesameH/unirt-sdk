@@ -6,6 +6,13 @@ python/unirt/lib/
 android/prebuilt/
 ios/UniRT.xcframework/
 
+# iOS example app: xcodegen regenerates the .xcodeproj from project.yml,
+# and test models are downloaded per its README, not checked in
+examples/ios/UniRTChatExample/UniRTChatExample.xcodeproj/
+examples/ios/UniRTChatExample/UniRTChatExample/Info.plist
+examples/ios/UniRTChatExample/Resources/*.gguf
+**/xcuserdata/
+
 # Python build artifacts
 build/
 dist/
