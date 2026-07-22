@@ -20,8 +20,8 @@ Pick your platform:
 ## Python
 
 ```sh
-pip install unirt  # once published to PyPI — for now, download the wheel
-                    # from the latest Release and `pip install` it directly
+pip install unirt  # once published to PyPI — until then, every Release
+                    # attaches a ready wheel: pip install unirt-*.whl
 ```
 
 ```python
@@ -36,7 +36,21 @@ See [python/README.md](python/README.md) for the full API.
 
 ## Android
 
-Download the AAR from the latest [Release](../../releases) and drop it
+Easiest: JitPack (the AAR from the matching Release, served as a Maven
+artifact — no manual download):
+
+```kotlin
+// settings.gradle.kts
+dependencyResolutionManagement {
+    repositories { maven("https://jitpack.io") }
+}
+// app/build.gradle.kts
+dependencies {
+    implementation("com.github.SesameH:unirt-sdk:<tag>")   // e.g. v0.1.0
+}
+```
+
+Or download the AAR from the latest [Release](../../releases) and drop it
 into your app, or build it yourself:
 
 ```sh
