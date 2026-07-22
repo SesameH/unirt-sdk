@@ -5,13 +5,15 @@ embedding inference SDK. This repo ships the public C header, the
 language bindings (Python / Android / iOS), and prebuilt native
 libraries per [Release](../../releases).
 
-![local test webpage against unirt.server, live device/memory stats + streaming chat](assets/webtest-demo.gif)
+![local test webpage: multi-turn chat plus a drag-and-drop image test against a real VLM, live device/memory stats](assets/webtest-demo.gif)
 
 The GIF above is `unirt.server` (the bundled OpenAI-compatible server) plus
 [examples/chat.html](examples/chat.html), a static test page, hitting a real
-local model end-to-end. Open the file directly (or serve it with
-`python3 -m http.server`) and point it at any `unirt.server` instance via the
-URL field at the top.
+LFM2-VL-450M VLM end-to-end on Metal: a two-turn text conversation (the
+second question relies on context from the first), then an image dragged
+into the page and described by the model. Open the file directly (or serve
+it with `python3 -m http.server`) and point it at any `unirt.server`
+instance via the URL field at the top.
 
 Pick your platform:
 
