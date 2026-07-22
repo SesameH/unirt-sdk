@@ -20,7 +20,7 @@ real device as the source of truth for performance.
 
 ```sh
 # 1. Build the binding AAR the app depends on (once, or after native changes)
-cd bindings/android && ./gradlew assembleRelease && cd -
+cd android && ./gradlew assembleRelease && cd -   # needs prebuilt/<abi>/*.so, see android/README.md
 
 # 2. Bundle test models as assets (any GGUF works; these are small defaults)
 cd examples/android/UniRTChatExample/app/src/main/assets
