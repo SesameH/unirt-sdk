@@ -1,0 +1,681 @@
+<!-- Copyright (c) 2026 Peter Huang. -->
+<!-- SPDX-License-Identifier: BSD-3-Clause -->
+<!--
+  Local test page for `python3 -m unirt.server`. Open this file directly in
+  a browser (or `python3 -m http.server` from this directory) — it's a
+  plain static page, no build step. It talks to the server's OpenAI-
+  compatible /v1/chat/completions (streaming via SSE, text or multimodal
+  content blocks) and the extra /v1/stats endpoint for live memory/device
+  readouts.
+
+  Run first (text):
+    python3 -m unirt.server --model <path> --backend llama_cpp --port 8080
+
+  Run first (VLM — drag an image into the page once connected):
+    python3 -m unirt.cli pull runanywhere/LFM2-VL-450M-GGUF --quant Q4_0
+    python3 -m unirt.server --model runanywhere/LFM2-VL-450M-GGUF --quant Q4_0 --backend llama_cpp --port 8080
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>UniRT — local chat</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #05080a;
+    --panel: #070d10;
+    --panel-2: #0a1216;
+    --glass: rgba(10, 20, 24, 0.55);
+    --line: #123138;
+    --line-bright: #1d545f;
+    --text: #d6f3f5;
+    --muted: #5c8a90;
+    --cyan: #23e6ef;
+    --cyan-dim: #0f8890;
+    --danger: #ff5470;
+    --violet: #9d7bff;
+    --violet-dim: #5a3cff;
+    --radius: 12px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    height: 100%;
+    margin: 0;
+    background:
+      linear-gradient(rgba(18,49,56,0.35) 1px, transparent 1px) 0 0 / 100% 28px,
+      linear-gradient(90deg, rgba(18,49,56,0.35) 1px, transparent 1px) 0 0 / 28px 100%,
+      var(--bg);
+    background-attachment: fixed;
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  body {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    margin: 0 auto;
+    padding: 20px 28px 0;
+  }
+  /* Glow orbs the glass panels actually pick up — without these, a
+     backdrop-filter blur over a flat dark background is invisible. */
+  body::before, body::after {
+    content: "";
+    position: fixed;
+    width: 60vw;
+    max-width: 640px;
+    height: 60vw;
+    max-height: 640px;
+    border-radius: 50%;
+    filter: blur(80px);
+    z-index: 0;
+    pointer-events: none;
+  }
+  body::before {
+    top: -220px;
+    left: -180px;
+    background: radial-gradient(circle, rgba(35,230,239,0.30), transparent 70%);
+  }
+  body::after {
+    top: 120px;
+    right: -220px;
+    background: radial-gradient(circle, rgba(94,58,255,0.24), transparent 70%);
+  }
+  header, .stats, main, footer { position: relative; z-index: 1; }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding: 10px 16px;
+    margin-bottom: 14px;
+    background: var(--glass);
+    backdrop-filter: blur(14px) saturate(140%);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    box-shadow: inset 0 1px 0 rgba(35,230,239,0.14), 0 8px 24px rgba(0,0,0,0.35);
+  }
+  .brand {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+  }
+  .brand .dot {
+    width: 8px;
+    height: 8px;
+    background: var(--muted);
+    box-shadow: 0 0 0 1px rgba(92,138,144,0.4);
+    transition: background .2s, box-shadow .2s;
+  }
+  .brand .dot.live {
+    background: var(--cyan);
+    box-shadow: 0 0 6px 1px var(--cyan);
+  }
+  .brand .dot.error {
+    background: var(--danger);
+    box-shadow: 0 0 6px 1px var(--danger);
+  }
+  h1 {
+    font-family: var(--mono);
+    font-size: 16px;
+    font-weight: 600;
+    margin: 0;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--cyan);
+    text-shadow: 0 0 10px rgba(35,230,239,0.35);
+  }
+  h1 span { color: var(--muted); font-weight: 400; text-shadow: none; }
+
+  .endpoint {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .endpoint input {
+    background: rgba(7,13,16,0.6);
+    border: 1px solid var(--line);
+    color: var(--text);
+    border-radius: var(--radius);
+    padding: 7px 10px;
+    font-size: 12px;
+    font-family: var(--mono);
+    width: 220px;
+  }
+  .endpoint input:focus { outline: none; border-color: var(--cyan); }
+
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+  .stat {
+    background: var(--glass);
+    backdrop-filter: blur(14px) saturate(140%);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    box-shadow: inset 0 1px 0 rgba(35,230,239,0.14), 0 8px 24px rgba(0,0,0,0.35);
+  }
+  .stat.offline { opacity: 0.45; }
+  /* While a request is generating, the server's model lock blocks
+     /v1/stats until it finishes — polling anyway would just hang, so
+     the row dims instead of looking frozen or broken. */
+  .stats.busy .stat { opacity: 0.35; filter: grayscale(0.4); transition: opacity .2s, filter .2s; }
+  .brand .dot.busy {
+    background: var(--violet);
+    box-shadow: 0 0 6px 1px var(--violet);
+    animation: pulse 1s ease-in-out infinite;
+  }
+  @keyframes pulse { 50% { opacity: 0.35; } }
+  .stat .label {
+    font-family: var(--mono);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  .stat .value {
+    font-family: var(--mono);
+    font-size: 15px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text);
+  }
+  .stat.device .value { color: var(--cyan); }
+
+  main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 60vh;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--panel);
+    overflow: hidden;
+    position: relative;
+  }
+  main.drag-over::after {
+    content: "drop image to attach";
+    position: absolute;
+    inset: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px dashed var(--cyan);
+    border-radius: var(--radius);
+    background: rgba(35,230,239,0.06);
+    color: var(--cyan);
+    font-family: var(--mono);
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    pointer-events: none;
+    z-index: 5;
+  }
+  #log {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .msg {
+    max-width: 68%;
+    padding: 11px 16px;
+    border-radius: 16px;
+    line-height: 1.55;
+    font-size: 14.5px;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+  .msg.user {
+    align-self: flex-end;
+    background: rgba(35,230,239,0.10);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid var(--cyan-dim);
+    color: var(--text);
+    border-bottom-right-radius: 4px;
+  }
+  .msg.assistant {
+    align-self: flex-start;
+    background: rgba(157,123,255,0.08);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid var(--violet-dim);
+    border-bottom-left-radius: 4px;
+  }
+  .msg.assistant.pending::after {
+    content: "▍";
+    color: var(--violet);
+    animation: blink 1s step-start infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+  .msg.system {
+    align-self: center;
+    color: var(--danger);
+    background: rgba(255,84,112,0.08);
+    border: 1px solid rgba(255,84,112,0.35);
+    font-family: var(--mono);
+    font-size: 13px;
+  }
+  .msg-images {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 8px;
+  }
+  .msg-images img {
+    width: 96px;
+    height: 96px;
+    object-fit: cover;
+    border-radius: var(--radius);
+    border: 1px solid var(--line-bright);
+  }
+
+  .attachments {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 0 14px;
+  }
+  .attachments:not(:empty) { padding-top: 12px; }
+  .attach-chip {
+    position: relative;
+    width: 56px;
+    height: 56px;
+    border-radius: var(--radius);
+    overflow: hidden;
+    border: 1px solid var(--line-bright);
+  }
+  .attach-chip img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .attach-chip button {
+    position: absolute;
+    top: 0; right: 0;
+    width: 18px; height: 18px;
+    padding: 0;
+    line-height: 16px;
+    font-size: 12px;
+    border: none;
+    border-radius: 0 0 0 4px;
+    background: rgba(5,8,10,0.75);
+    color: var(--danger);
+  }
+
+  form {
+    display: flex;
+    align-items: flex-end;
+    gap: 10px;
+    padding: 14px;
+    border-top: 1px solid var(--line);
+    background: var(--glass);
+    backdrop-filter: blur(14px) saturate(140%);
+    -webkit-backdrop-filter: blur(14px) saturate(140%);
+    box-shadow: inset 0 1px 0 rgba(35,230,239,0.1);
+  }
+  .attach-btn {
+    border: 1px solid var(--line);
+    color: var(--muted);
+    background: transparent;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    font-size: 18px;
+    flex-shrink: 0;
+  }
+  .attach-btn:hover { border-color: var(--cyan); color: var(--cyan); box-shadow: 0 0 10px rgba(35,230,239,0.3); background: transparent; }
+  textarea {
+    flex: 1;
+    resize: none;
+    background: rgba(5,8,10,0.5);
+    color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 11px 12px;
+    font-size: 14.5px;
+    font-family: inherit;
+    line-height: 1.4;
+    max-height: 200px;
+  }
+  textarea:focus { outline: none; border-color: var(--cyan); }
+  button {
+    border: 1px solid var(--cyan);
+    border-radius: var(--radius);
+    padding: 0 20px;
+    height: 40px;
+    background: transparent;
+    color: var(--cyan);
+    font-family: var(--mono);
+    font-weight: 600;
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    cursor: pointer;
+    transition: box-shadow .15s, background .15s;
+  }
+  button:hover { box-shadow: 0 0 10px rgba(35,230,239,0.4); background: rgba(35,230,239,0.08); }
+  button:active { background: rgba(35,230,239,0.18); }
+  button:disabled {
+    border-color: var(--line);
+    color: var(--muted);
+    cursor: not-allowed;
+    box-shadow: none;
+    background: transparent;
+  }
+  footer {
+    text-align: center;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 10px 0 18px;
+  }
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-thumb { background: var(--line); border-radius: var(--radius); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">
+    <span class="dot" id="statusDot"></span>
+    <h1>UniRT <span id="modelName">— not connected</span></h1>
+  </div>
+  <div class="endpoint">
+    <input id="baseUrl" value="http://127.0.0.1:8080" spellcheck="false">
+    <button id="connectBtn" type="button">Connect</button>
+  </div>
+</header>
+
+<div class="stats" id="statsRow">
+  <div class="stat device">
+    <div class="label">Device</div>
+    <div class="value" id="statDevice">—</div>
+  </div>
+  <div class="stat">
+    <div class="label">Model memory</div>
+    <div class="value" id="statModel">—</div>
+  </div>
+  <div class="stat kv">
+    <div class="label">KV cache</div>
+    <div class="value" id="statKv">—</div>
+  </div>
+  <div class="stat" id="statPeakCard">
+    <div class="label">Device peak</div>
+    <div class="value" id="statPeak">—</div>
+  </div>
+  <div class="stat">
+    <div class="label">Process RSS</div>
+    <div class="value" id="statRss">—</div>
+  </div>
+</div>
+
+<main id="dropZone">
+  <div id="log"></div>
+  <div class="attachments" id="attachments"></div>
+  <form id="composer">
+    <button class="attach-btn" id="attachBtn" type="button" title="Attach image">+</button>
+    <input id="fileInput" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
+    <textarea id="input" rows="1" placeholder="Ask something… (Shift+Enter for newline, drag an image in for VLM models)"></textarea>
+    <button id="sendBtn" type="submit">Send</button>
+  </form>
+</main>
+
+<footer>Streaming via /v1/chat/completions · stats via /v1/stats · drag an image in for VLM models · everything runs on your machine</footer>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const log = $('log');
+const dot = $('statusDot');
+const modelName = $('modelName');
+const dropZone = $('dropZone');
+const attachmentsEl = $('attachments');
+let statsTimer = null;
+let messages = [];
+let attachments = []; // [{name, dataUrl}]
+
+function addMessage(role, text, images) {
+  const el = document.createElement('div');
+  el.className = 'msg ' + role;
+  if (images && images.length) {
+    const row = document.createElement('div');
+    row.className = 'msg-images';
+    for (const src of images) {
+      const img = document.createElement('img');
+      img.src = src;
+      row.appendChild(img);
+    }
+    el.appendChild(row);
+  }
+  const textNode = document.createElement('span');
+  textNode.textContent = text;
+  el.appendChild(textNode);
+  log.appendChild(el);
+  log.scrollTop = log.scrollHeight;
+  return { el, textNode };
+}
+
+// -1 means "this backend doesn't report it" (see unirt's runtime_stats:
+// llama_cpp has no GPU-peak API, mlx does via mx.get_peak_memory()) —
+// distinct from a real zero, so it gets its own label instead of a value.
+function fmtBytes(n) {
+  if (n === null || n === undefined || n < 0) return 'n/a';
+  if (n === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let i = 0, v = n;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+  return v.toFixed(v >= 10 || i === 0 ? 0 : 1) + ' ' + units[i];
+}
+
+async function refreshStats() {
+  const base = $('baseUrl').value.replace(/\/$/, '');
+  try {
+    const res = await fetch(base + '/v1/stats');
+    if (!res.ok) throw new Error('stats HTTP ' + res.status);
+    const s = await res.json();
+    $('statDevice').textContent = s.device_name || 'unknown';
+    $('statModel').textContent = fmtBytes(s.model_bytes);
+    $('statKv').textContent = fmtBytes(s.kv_cache_bytes);
+    $('statPeak').textContent = fmtBytes(s.device_peak_bytes);
+    $('statPeakCard').classList.toggle('offline', s.device_peak_bytes < 0);
+    $('statRss').textContent = fmtBytes(s.process_rss_bytes);
+    dot.className = 'dot live';
+  } catch (e) {
+    dot.className = 'dot error';
+  }
+}
+
+async function connect() {
+  const base = $('baseUrl').value.replace(/\/$/, '');
+  try {
+    const res = await fetch(base + '/v1/models');
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    const id = data.data && data.data[0] && data.data[0].id;
+    modelName.textContent = '— ' + (id || 'connected');
+    dot.className = 'dot live';
+    if (statsTimer) clearInterval(statsTimer);
+    refreshStats();
+    statsTimer = setInterval(refreshStats, 2000);
+  } catch (e) {
+    modelName.textContent = '— connection failed';
+    dot.className = 'dot error';
+  }
+}
+
+// ---- image attachments ----
+
+function renderAttachments() {
+  attachmentsEl.innerHTML = '';
+  attachments.forEach((a, i) => {
+    const chip = document.createElement('div');
+    chip.className = 'attach-chip';
+    const img = document.createElement('img');
+    img.src = a.dataUrl;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = '×';
+    remove.addEventListener('click', () => {
+      attachments.splice(i, 1);
+      renderAttachments();
+    });
+    chip.appendChild(img);
+    chip.appendChild(remove);
+    attachmentsEl.appendChild(chip);
+  });
+}
+
+function addFiles(files) {
+  for (const file of files) {
+    if (!file.type.startsWith('image/')) continue;
+    const reader = new FileReader();
+    reader.onload = () => {
+      attachments.push({ name: file.name, dataUrl: reader.result });
+      renderAttachments();
+    };
+    reader.readAsDataURL(file);
+  }
+}
+
+$('attachBtn').addEventListener('click', () => $('fileInput').click());
+$('fileInput').addEventListener('change', (ev) => {
+  addFiles(ev.target.files);
+  ev.target.value = '';
+});
+
+['dragenter', 'dragover'].forEach((type) => {
+  dropZone.addEventListener(type, (ev) => {
+    ev.preventDefault();
+    dropZone.classList.add('drag-over');
+  });
+});
+['dragleave', 'drop'].forEach((type) => {
+  dropZone.addEventListener(type, (ev) => {
+    ev.preventDefault();
+    if (type === 'drop' && ev.dataTransfer.files.length) addFiles(ev.dataTransfer.files);
+    dropZone.classList.remove('drag-over');
+  });
+});
+
+// ---- sending ----
+
+function buildContent(text, images) {
+  if (!images.length) return text;
+  const blocks = [];
+  if (text) blocks.push({ type: 'text', text });
+  for (const img of images) {
+    blocks.push({ type: 'image_url', image_url: { url: img.dataUrl } });
+  }
+  return blocks;
+}
+
+async function send(text, images) {
+  const base = $('baseUrl').value.replace(/\/$/, '');
+  messages.push({ role: 'user', content: buildContent(text, images) });
+  const { el: assistantEl, textNode } = addMessage('assistant', '');
+  assistantEl.classList.add('pending');
+
+  // The server holds the model's lock for the whole generation, so
+  // /v1/stats would just hang if polled mid-request — stop polling and
+  // show "busy" instead of letting the row look frozen or broken.
+  if (statsTimer) { clearInterval(statsTimer); statsTimer = null; }
+  $('statsRow').classList.add('busy');
+  dot.className = 'dot busy';
+
+  $('sendBtn').disabled = true;
+  try {
+    const res = await fetch(base + '/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messages, stream: true }),
+    });
+    if (!res.ok || !res.body) {
+      const errText = await res.text().catch(() => '');
+      throw new Error('HTTP ' + res.status + ' ' + errText);
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    let full = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n\n');
+      buf = lines.pop();
+      for (const chunk of lines) {
+        const line = chunk.trim();
+        if (!line.startsWith('data:')) continue;
+        const payload = line.slice(5).trim();
+        if (payload === '[DONE]') continue;
+        const json = JSON.parse(payload);
+        const delta = json.choices && json.choices[0] && json.choices[0].delta;
+        if (delta && delta.content) {
+          full += delta.content;
+          textNode.textContent = full;
+          log.scrollTop = log.scrollHeight;
+        }
+      }
+    }
+    messages.push({ role: 'assistant', content: full });
+  } catch (e) {
+    assistantEl.classList.remove('pending');
+    assistantEl.className = 'msg system';
+    textNode.textContent = 'error: ' + e.message;
+    messages.pop();
+    return;
+  } finally {
+    assistantEl.classList.remove('pending');
+    $('sendBtn').disabled = false;
+    $('statsRow').classList.remove('busy');
+    refreshStats();
+    statsTimer = setInterval(refreshStats, 2000);
+  }
+}
+
+$('connectBtn').addEventListener('click', connect);
+
+$('composer').addEventListener('submit', (ev) => {
+  ev.preventDefault();
+  const box = $('input');
+  const text = box.value.trim();
+  if (!text && !attachments.length) return;
+  addMessage('user', text, attachments.map((a) => a.dataUrl));
+  const sent = attachments;
+  attachments = [];
+  renderAttachments();
+  box.value = '';
+  box.style.height = 'auto';
+  send(text, sent);
+});
+
+$('input').addEventListener('keydown', (ev) => {
+  if (ev.key === 'Enter' && !ev.shiftKey) {
+    ev.preventDefault();
+    $('composer').requestSubmit();
+  }
+});
+
+$('input').addEventListener('input', function () {
+  this.style.height = 'auto';
+  this.style.height = Math.min(this.scrollHeight, 200) + 'px';
+});
+
+connect();
+</script>
+</body>
+</html>

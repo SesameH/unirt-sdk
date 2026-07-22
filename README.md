@@ -3,17 +3,15 @@
 Prebuilt, install-only distribution of **UniRT** — an on-device LLM/VLM/
 embedding inference SDK. This repo ships the public C header, the
 language bindings (Python / Android / iOS), and prebuilt native
-libraries per [Release](../../releases); it does not contain the SDK's
-implementation (C++ bridge, backend plugins, third-party engines), which
-lives in a private repo.
+libraries per [Release](../../releases).
 
 ![local test webpage against unirt.server, live device/memory stats + streaming chat](assets/webtest-demo.gif)
 
 The GIF above is `unirt.server` (the bundled OpenAI-compatible server) plus
-a static test page, hitting a real local model end-to-end. The page itself
-lives in the core dev repo (`examples/chat.html`) rather than here, since
-this repo only ships install artifacts — point it at any `unirt.server`
-instance via the URL field at the top.
+[examples/chat.html](examples/chat.html), a static test page, hitting a real
+local model end-to-end. Open the file directly (or serve it with
+`python3 -m http.server`) and point it at any `unirt.server` instance via the
+URL field at the top.
 
 Pick your platform:
 
