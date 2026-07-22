@@ -7,6 +7,14 @@ libraries per [Release](../../releases); it does not contain the SDK's
 implementation (C++ bridge, backend plugins, third-party engines), which
 lives in a private repo.
 
+![local test webpage against unirt.server, live device/memory stats + streaming chat](assets/webtest-demo.gif)
+
+The GIF above is `unirt.server` (the bundled OpenAI-compatible server) plus
+a static test page, hitting a real local model end-to-end. The page itself
+lives in the core dev repo (`examples/chat.html`) rather than here, since
+this repo only ships install artifacts — point it at any `unirt.server`
+instance via the URL field at the top.
+
 Pick your platform:
 
 ## Python
