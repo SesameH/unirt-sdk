@@ -872,6 +872,28 @@ typedef struct {
 UNIRT_API int32_t unirt_vlm_generate(
     unirt_VLM* handle, const unirt_VlmGenerateInput* input, unirt_VlmGenerateOutput* output);
 
+/** Memory footprint of the loaded model. Byte fields are -1 when the plugin
+ *  cannot measure them; the bridge zero-initializes the rest. Same shape as
+ *  unirt_LlmRuntimeStats — kept as its own type since VLM's model_bytes may
+ *  need to cover the projector/encoder too, not just the text weights. */
+typedef struct {
+    int64_t model_bytes;       /** Bytes held by the weights (+ projector, if any). */
+    int64_t kv_cache_bytes;    /** Bytes held by KV cache / decode state. */
+    int64_t device_peak_bytes; /** Peak device (GPU/NPU) allocation since load. */
+    int64_t process_rss_bytes; /** Whole-process resident set; filled by the bridge. */
+    const char* device_name;   /** Active compute device; static string owned by the plugin. */
+} unirt_VlmRuntimeStats;
+
+/**
+ * @brief Memory usage of the loaded multimodal model — the VLM counterpart
+ *        of unirt_llm_get_runtime_stats(). Cheap; fine to call between
+ *        generations.
+ *
+ * @return UNIRT_SUCCESS, or UNIRT_ERROR_COMMON_PARAM_NOT_SUPPORTED when the
+ *         plugin can report nothing at all.
+ */
+UNIRT_API int32_t unirt_vlm_get_runtime_stats(unirt_VLM* handle, unirt_VlmRuntimeStats* output);
+
 /* ========================================================================== */
 /*  Embedding — pre-tokenized encoder models                                 */
 /* ========================================================================== */
@@ -935,6 +957,40 @@ UNIRT_API int32_t unirt_embedding_encode(
     unirt_EmbeddingEncodeOutput* output);
 UNIRT_API int32_t unirt_embedding_get_runtime_stats(
     unirt_Embedding* handle, unirt_EmbeddingRuntimeStats* output);
+
+/** One query scored against N candidate documents. Unlike
+ *  unirt_EmbeddingEncodeInput, this takes raw UTF-8 text rather than
+ *  pre-tokenized ids: cross-encoder reranking needs the model's own
+ *  tokenizer and (when present) a model-specific "rerank" prompt template
+ *  to assemble the query+document pair correctly, neither of which the
+ *  pre-tokenized ABI above can express. Supported only by backends whose
+ *  loaded model has a classifier head (GGUF rerankers via llama_cpp);
+ *  others report UNIRT_ERROR_COMMON_PARAM_NOT_SUPPORTED. */
+typedef struct {
+    const char*        query_utf8;
+    const char* const* documents_utf8;
+    int32_t            document_count;
+} unirt_EmbeddingRerankInput;
+
+/** One relevance score per document, same order as the request. Release
+ *  scores with unirt_free(). */
+typedef struct {
+    float*  scores;
+    int32_t score_count;
+} unirt_EmbeddingRerankOutput;
+
+/**
+ * @brief Score a query against each candidate document with the loaded
+ *        model's cross-encoder/classifier head (llama.cpp's
+ *        LLAMA_POOLING_TYPE_RANK) — higher is more relevant; the caller
+ *        sorts.
+ *
+ * @return UNIRT_SUCCESS, UNIRT_ERROR_COMMON_PARAM_NOT_SUPPORTED when the
+ *         loaded model has no classifier head, or a common validation code.
+ */
+UNIRT_API int32_t unirt_embedding_rerank(
+    unirt_Embedding* handle, const unirt_EmbeddingRerankInput* input,
+    unirt_EmbeddingRerankOutput* output);
 
 #ifdef __cplusplus
 } /* extern "C" */

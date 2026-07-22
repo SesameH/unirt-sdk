@@ -16,6 +16,8 @@ from ._types import (
     unirt_EmbeddingCreateInput,
     unirt_EmbeddingEncodeInput,
     unirt_EmbeddingEncodeOutput,
+    unirt_EmbeddingRerankInput,
+    unirt_EmbeddingRerankOutput,
     unirt_EmbeddingRuntimeStats,
     unirt_GetDeviceListInput,
     unirt_GetDeviceListOutput,
@@ -39,6 +41,7 @@ from ._types import (
     unirt_VlmCreateInput,
     unirt_VlmGenerateInput,
     unirt_VlmGenerateOutput,
+    unirt_VlmRuntimeStats,
 )
 
 unirt_log_callback = CFUNCTYPE(None, c_int32, c_char_p)
@@ -149,6 +152,10 @@ _PROTOTYPES: dict[str, tuple[list[object], object]] = {
         [c_void_p, POINTER(unirt_VlmCapabilities)],
         c_int32,
     ),
+    'unirt_vlm_get_runtime_stats': (
+        [c_void_p, POINTER(unirt_VlmRuntimeStats)],
+        c_int32,
+    ),
     'unirt_embedding_create': (
         [POINTER(unirt_EmbeddingCreateInput), POINTER(c_void_p)],
         c_int32,
@@ -160,6 +167,10 @@ _PROTOTYPES: dict[str, tuple[list[object], object]] = {
     ),
     'unirt_embedding_get_runtime_stats': (
         [c_void_p, POINTER(unirt_EmbeddingRuntimeStats)],
+        c_int32,
+    ),
+    'unirt_embedding_rerank': (
+        [c_void_p, POINTER(unirt_EmbeddingRerankInput), POINTER(unirt_EmbeddingRerankOutput)],
         c_int32,
     ),
 }

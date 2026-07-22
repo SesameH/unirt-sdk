@@ -270,6 +270,16 @@ class unirt_VlmGenerateOutput(Structure):
     ]
 
 
+class unirt_VlmRuntimeStats(Structure):
+    _fields_ = [
+        ('model_bytes', c_int64),
+        ('kv_cache_bytes', c_int64),
+        ('device_peak_bytes', c_int64),
+        ('process_rss_bytes', c_int64),
+        ('device_name', c_char_p),
+    ]
+
+
 class unirt_EmbeddingCreateInput(Structure):
     _fields_ = [
         ('model_path', c_char_p),
@@ -305,6 +315,21 @@ class unirt_EmbeddingRuntimeStats(Structure):
         ('device_peak_bytes', c_int64),
         ('process_rss_bytes', c_int64),
         ('device_name', c_char_p),
+    ]
+
+
+class unirt_EmbeddingRerankInput(Structure):
+    _fields_ = [
+        ('query_utf8', c_char_p),
+        ('documents_utf8', POINTER(c_char_p)),
+        ('document_count', c_int32),
+    ]
+
+
+class unirt_EmbeddingRerankOutput(Structure):
+    _fields_ = [
+        ('scores', POINTER(c_float)),
+        ('score_count', c_int32),
     ]
 
 
