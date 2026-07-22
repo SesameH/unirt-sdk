@@ -58,6 +58,8 @@ SwiftUI app (Text/Vision mode switch, real on-device Metal inference,
 verified end to end on an iPhone) — see its own README for build/run/real-
 device signing instructions.
 
+![Real iPhone (A17 Pro) running both modes: Text asking the capital of France, then switching to Vision to describe a dropped-in test image — all on-device over Metal](assets/ios-demo.gif)
+
 ## What's closed-source, what isn't
 
 The public C ABI (`include/unirt.h`) and every language binding
