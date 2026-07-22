@@ -47,6 +47,13 @@ cd android
 
 See [android/README.md](android/README.md).
 
+[examples/android/UniRTChatExample](examples/android/UniRTChatExample) is a
+full Jetpack Compose app (Text/Vision mode switch, streaming replies,
+per-generation stats), the Android counterpart of the iOS example below —
+see its own README for build/emulator instructions.
+
+![Android emulator running both modes: Text asking the capital of France, then switching to Vision to describe the bundled test image — driven end to end by the example's instrumentation test](assets/android-demo.gif)
+
 ## iOS
 
 Add this repo as a local or remote Swift package dependency once
