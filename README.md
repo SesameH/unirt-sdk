@@ -20,8 +20,8 @@ Pick your platform:
 ## Python
 
 ```sh
-pip install unirt  # once published to PyPI — until then, every Release
-                    # attaches a ready wheel: pip install unirt-*.whl
+pip install unirt          # macOS arm64 wheel, native libraries included
+unirt chat bartowski/SmolLM2-135M-Instruct-GGUF   # one-line interactive chat
 ```
 
 ```python
@@ -30,6 +30,14 @@ from unirt.auto import AutoModelForCausalLM
 model = AutoModelForCausalLM.from_pretrained("bartowski/SmolLM2-135M-Instruct-GGUF",
                                               device_map="llama_cpp")
 print(model.generate("The capital of France is"))
+```
+
+Or run the bundled OpenAI-compatible server and point any OpenAI client
+(or [examples/chat.html](examples/chat.html)) at it:
+
+```sh
+python3 -m unirt.server --model bartowski/SmolLM2-135M-Instruct-GGUF \
+  --backend llama_cpp --port 8080
 ```
 
 See [python/README.md](python/README.md) for the full API.
