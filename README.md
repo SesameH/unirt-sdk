@@ -53,6 +53,11 @@ Add this repo as a local or remote Swift package dependency once
 `UniRT.xcframework` (downloaded from the latest [Release](../../releases))
 is placed at the repo root — see [ios/README.md](ios/README.md).
 
+[examples/ios/UniRTChatExample](examples/ios/UniRTChatExample) is a full
+SwiftUI app (Text/Vision mode switch, real on-device Metal inference,
+verified end to end on an iPhone) — see its own README for build/run/real-
+device signing instructions.
+
 ## What's closed-source, what isn't
 
 The public C ABI (`include/unirt.h`) and every language binding
