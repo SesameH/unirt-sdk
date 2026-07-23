@@ -54,7 +54,7 @@ dependencyResolutionManagement {
 }
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.SesameH:unirt-sdk:<tag>")   // e.g. v0.1.0
+    implementation("com.github.SesameH:unirt-sdk:v0.2.0")
 }
 ```
 
@@ -78,9 +78,11 @@ see its own README for build/emulator instructions.
 
 ## iOS
 
-Add this repo as a local or remote Swift package dependency once
-`UniRT.xcframework` (downloaded from the latest [Release](../../releases))
-is placed at the repo root — see [ios/README.md](ios/README.md).
+Clone the matching tag, download `unirt-ios-xcframework.zip` from its
+[Release](../../releases), unzip it into `ios/`, then add that `ios`
+directory as a **local** Swift package dependency. The v0.2.0 tag does not
+contain the binary, so adding only the remote repository URL is not enough.
+See [ios/README.md](ios/README.md) for exact commands and Xcode steps.
 
 [examples/ios/UniRTChatExample](examples/ios/UniRTChatExample) is a full
 SwiftUI app (Text/Vision mode switch, real on-device Metal inference,

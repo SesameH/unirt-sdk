@@ -3,7 +3,55 @@
 Kotlin + JNI layer over the UniRT C API. LLM (text) and VLM (multimodal)
 both via llama_cpp/GGUF; embeddings follow the same pattern when needed.
 
-## Build the AAR
+## Install from JitPack
+
+The published AAR already contains the Kotlin API, JNI bridge, UniRT runtime,
+and llama.cpp libraries. Add JitPack to `settings.gradle.kts`:
+
+```kotlin
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+        maven(url = "https://jitpack.io")
+    }
+}
+```
+
+Then add the release tag to the app module:
+
+```kotlin
+// app/build.gradle.kts
+dependencies {
+    implementation("com.github.SesameH:unirt-sdk:v0.2.0")
+}
+```
+
+JitPack publishes the AAR attached to the matching GitHub Release; it does
+not rebuild the closed-source native runtime. The POM supplies Kotlin stdlib
+and `kotlinx-coroutines-core` transitively.
+
+The current artifact requires `minSdk 28` and ships only `arm64-v8a`. Use an
+arm64 device/emulator; an x86_64 emulator cannot load the native libraries.
+
+## Use the downloaded AAR directly
+
+Alternatively, download `unirt-android.aar` from the
+[v0.2.0 Release](https://github.com/SesameH/unirt-sdk/releases/tag/v0.2.0),
+place it at `app/libs/unirt-android.aar`, and add:
+
+```kotlin
+// app/build.gradle.kts
+dependencies {
+    implementation(files("libs/unirt-android.aar"))
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+}
+```
+
+Direct AAR dependencies do not carry Maven transitive dependencies, hence
+the explicit coroutines dependency.
+
+## Rebuild the AAR wrapper
 
 This is a real Android library module (Gradle + AGP,
 `com.android.library`). The SDK's own implementation is closed-source, so
@@ -11,13 +59,18 @@ This is a real Android library module (Gradle + AGP,
 (`jni/unirt_jni.cpp`) against a **prebuilt** `libunirt.so`; the rest
 (`libunirt_plugin_llama_cpp.so`, llama.cpp's own `libggml*`/`libllama`/
 `libmtmd`, `libomp.so`) are bundled straight in via the `jniLibs` source
-set. Grab them first:
+set. Extract the native libraries from the published AAR, discard its JNI
+bridge, and rebuild that bridge from this checkout:
 
 ```sh
+git checkout v0.2.0
 cd android
-# Download and unzip the latest arm64-v8a native libs from this repo's
-# Releases into prebuilt/arm64-v8a/ (must contain libunirt.so at minimum —
-# see jni/CMakeLists.txt).
+curl -fL -o unirt-android.aar \
+  https://github.com/SesameH/unirt-sdk/releases/download/v0.2.0/unirt-android.aar
+mkdir -p prebuilt/arm64-v8a
+unzip -jo unirt-android.aar 'jni/arm64-v8a/*.so' -d prebuilt/arm64-v8a
+rm prebuilt/arm64-v8a/libunirt_jni.so
+
 ./gradlew assembleRelease   # -> build/outputs/aar/unirt-android-release.aar
 ./gradlew test              # unit tests: fakes LlmSession/VlmSession — anything
                              # touching Native itself needs a real device/emulator
@@ -31,12 +84,6 @@ in your app module — plugins are still discovered automatically at runtime
 
 Only `arm64-v8a` is shipped today (`abiFilters` in `build.gradle.kts`);
 add more ABIs there once prebuilt libs for them exist.
-
-## Skip Gradle — use the downloaded AAR directly
-
-If you don't need to touch the JNI glue, just drop the prebuilt AAR from
-this repo's [Releases](../../../releases) straight into your app module
-and skip building anything here at all.
 
 ## Use
 

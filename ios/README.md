@@ -11,22 +11,50 @@ directory scan the way `llama_cpp` is on macOS/Linux/Windows. Instead the
 app links the plugin as a **static library** and joins it in-process with
 `unirt_register_plugin()` before `unirt_init()`.
 
-## Get the XCFramework
+## Install v0.2.0 as a local Swift package
 
 `UniRT.xcframework` is a prebuilt binary (merges `libunirt` + the
 llama_cpp plugin + llama.cpp's own engine into one dylib per platform
 slice) — it isn't built from this repo, since doing so needs the private
-core repo's CMake project. Download the latest one from this repo's
-[Releases](../../releases) and unzip it at the repo root (next to this
-`ios/` directory, i.e. `UniRT.xcframework` sits alongside `Package.swift`)
-before opening the package.
+core repo's CMake project.
 
-Then add this repo as a Swift package dependency (Xcode: File → Add
-Package Dependencies → paste this repo's URL, or Add Local... if you
-cloned it) and link `UniRTKit` to your app target — that's it.
-`Package.swift`'s `UniRTNative` binary target picks up `UniRT.xcframework`
-and SPM links + embeds it automatically; no manual "Link Binary"/"Embed &
-Sign" steps, no linker flags.
+Clone the matching tag and place the release asset inside `ios/`, next to
+`Package.swift`:
+
+```sh
+git clone --branch v0.2.0 --depth 1 \
+  https://github.com/SesameH/unirt-sdk.git
+cd unirt-sdk
+curl -fLO \
+  https://github.com/SesameH/unirt-sdk/releases/download/v0.2.0/unirt-ios-xcframework.zip
+unzip -q unirt-ios-xcframework.zip -d ios
+```
+
+The resulting layout must be:
+
+```text
+ios/
+├── Package.swift
+├── UniRT.xcframework/
+├── Sources/
+└── Tests/
+```
+
+In Xcode:
+
+1. Choose **File → Add Package Dependencies… → Add Local…**.
+2. Select the checkout's `ios` directory (the directory containing
+   `Package.swift`).
+3. Add the `UniRTKit` product to the app target.
+
+For another local Swift package, add `.package(path: "../unirt-sdk/ios")`
+to its dependencies and depend on the `UniRTKit` product.
+
+The v0.2.0 repository tag intentionally does not contain the binary, so
+pasting the GitHub repository URL as a remote package is not sufficient.
+Use the local-package steps above. `Package.swift`'s `UniRTNative` binary
+target then links and embeds the downloaded XCFramework automatically; no
+manual linker flags or separate **Embed & Sign** step is needed.
 
 ```swift
 import UniRTKit
