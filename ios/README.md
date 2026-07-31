@@ -11,7 +11,7 @@ directory scan the way `llama_cpp` is on macOS/Linux/Windows. Instead the
 app links the plugin as a **static library** and joins it in-process with
 `unirt_register_plugin()` before `unirt_init()`.
 
-## Install v0.2.0 as a local Swift package
+## Install v0.2.2 as a local Swift package
 
 `UniRT.xcframework` is a prebuilt binary (merges `libunirt` + the
 llama_cpp plugin + llama.cpp's own engine into one dylib per platform
@@ -22,11 +22,11 @@ Clone the matching tag and place the release asset inside `ios/`, next to
 `Package.swift`:
 
 ```sh
-git clone --branch v0.2.0 --depth 1 \
+git clone --branch v0.2.2 --depth 1 \
   https://github.com/SesameH/unirt-sdk.git
 cd unirt-sdk
 curl -fLO \
-  https://github.com/SesameH/unirt-sdk/releases/download/v0.2.0/unirt-ios-xcframework.zip
+  https://github.com/SesameH/unirt-sdk/releases/download/v0.2.2/unirt-ios-xcframework.zip
 unzip -q unirt-ios-xcframework.zip -d ios
 ```
 
@@ -50,7 +50,7 @@ In Xcode:
 For another local Swift package, add `.package(path: "../unirt-sdk/ios")`
 to its dependencies and depend on the `UniRTKit` product.
 
-The v0.2.0 repository tag intentionally does not contain the binary, so
+The v0.2.2 repository tag intentionally does not contain the binary, so
 pasting the GitHub repository URL as a remote package is not sufficient.
 Use the local-package steps above. `Package.swift`'s `UniRTNative` binary
 target then links and embeds the downloaded XCFramework automatically; no

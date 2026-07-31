@@ -3,11 +3,16 @@
 Python binding for the UniRT SDK — run LLMs locally through a single API with
 interchangeable backends:
 
-| runtime     | models                                               | hardware                    |
-|-------------|------------------------------------------------------|-----------------------------|
-| `llama_cpp` | GGUF                                                 | CPU / Metal / Vulkan / CUDA |
-| `mlx`       | HF safetensors (validated SmolLM2-style Llama/ByteLevel-BPE layout; dense or MLX-quantized) | Apple Silicon Metal GPU |
-| `onnxruntime` | ONNX encoder embeddings                         | CPU / Apple Core ML     |
+| runtime       | models                                                | hardware                | in the published wheels |
+|---------------|-------------------------------------------------------|-------------------------|-------------------------|
+| `llama_cpp`   | GGUF (LLM, VLM, embeddings, rerank)                   | CPU, Metal on macOS     | yes                     |
+| `mlx`         | HF safetensors (SmolLM2-style Llama/ByteLevel-BPE layout; dense or MLX-quantized) | Apple Silicon Metal GPU | no — build from source  |
+| `onnxruntime` | ONNX encoder embeddings                               | CPU, Apple Core ML      | no — build from source  |
+
+Run `unirt devices` to list what your install actually has. The wheels ship the
+`llama_cpp` runtime only, built for a generic CPU baseline plus Metal on macOS —
+no CUDA and no Vulkan. The other two runtimes exist in the source tree and
+require building the SDK yourself.
 
 The bundled llama_cpp runtime supports GGUF VLMs through libmtmd when an
 mmproj is present. MLX remains text-only and fails explicitly for VLM models.
@@ -20,7 +25,9 @@ fails before native model allocation.
 pip install unirt
 ```
 
-macOS arm64 wheels ship every native library — no toolchain, no build step.
+Wheels ship the native libraries — no toolchain, no build step — for macOS 14+
+arm64, Linux x86_64 and arm64 (`manylinux_2_31`, glibc 2.31+), and Windows 10+
+x86_64 and arm64. Python 3.10+.
 
 ## Quickstart (CLI)
 
@@ -71,6 +78,28 @@ prefilling the supplied prompt). To continue from a known cached prefix, pass
 the exact prefix length through `n_past`; invalid values are rejected rather
 than silently duplicating context.
 
+## Structured output
+
+Constrain decoding so the reply is guaranteed to parse — the grammar masks
+invalid tokens at every step, which makes even small models reliable JSON
+emitters (llama_cpp backend; MLX rejects these options):
+
+```python
+schema = {'type': 'object',
+          'properties': {'city': {'type': 'string'}, 'country': {'type': 'string'}},
+          'required': ['city', 'country']}
+out = model.generate('Facts about the capital of France as JSON.',
+                     json_schema=schema)      # dict or serialized JSON string
+data = json.loads(out.text)                    # always parses
+
+model.generate(prompt, json_mode=True)         # any syntactically valid JSON
+model.generate(prompt, grammar='root ::= ...')  # raw GBNF
+```
+
+The server accepts the OpenAI `response_format` field with types
+`json_object` and `json_schema`. Note a `length` finish can still truncate
+mid-object — budget `max_tokens` accordingly.
+
 ## OpenAI-compatible server
 
 ```sh
@@ -82,10 +111,13 @@ Then point any OpenAI client (or plain curl) at
 `http://localhost:8080/v1/chat/completions` — streaming SSE included, and
 GGUF VLMs accept image content parts when loaded with an mmproj.
 
-The native library is closed-source and ships prebuilt: a wheel from this
-repo's [Releases](../../../releases) already bundles it under `unirt/lib/`;
-installing from source instead, populate that directory yourself from a
-Release's native-libs archive before `pip install .`. Set `UNIRT_LIB_PATH` /
-`UNIRT_PLUGIN_PATH` to point elsewhere. See the top-level README for the
-interactive chat example and the OpenAI-compatible server
-(`python3 -m unirt.server`).
+`--embedding-model <encoder>` adds `/v1/embeddings` and `--rerank-model
+<cross-encoder>` adds `/v1/rerank`; either may be given without `--model`, so a
+retrieval sidecar needs no chat model at all.
+
+The native library is closed-source and ships prebuilt. A wheel already bundles
+it under `unirt/lib/`; a source checkout is discovered at
+`<repo>/sdk/pkg-unirt/lib` after building the SDK, and installing from source
+without building means populating `unirt/lib/` yourself from a Release's
+native-libs archive before `pip install .`. `UNIRT_LIB_PATH` /
+`UNIRT_PLUGIN_PATH` override the search.

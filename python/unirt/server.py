@@ -5,10 +5,17 @@
 
     python3 -m unirt.server --model models/SmolLM2-135M-Instruct --backend mlx --port 8080
 
+Any of the models may be omitted, so this also serves as a retrieval sidecar:
+
+    python3 -m unirt.server --embedding-model models/all-MiniLM-L6-v2-GGUF \
+        --rerank-model models/bge-reranker-v2-m3-GGUF
+
 Endpoints:
     GET  /v1/models
     GET  /v1/stats              (runtime_stats(): memory/device usage; not OpenAI-standard)
     POST /v1/chat/completions   (supports "stream": true via SSE)
+    POST /v1/embeddings         (requires --embedding-model)
+    POST /v1/rerank             (requires --rerank-model; the Cohere/Jina shape)
 """
 
 from __future__ import annotations
@@ -20,6 +27,7 @@ import json
 import math
 import os
 import signal
+import struct
 import tempfile
 import threading
 import time
@@ -27,7 +35,7 @@ import uuid
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from .auto import AutoModelForCausalLM
+from .auto import AutoModelForCausalLM, AutoModelForEmbedding
 from .modeling import UniRTVLM
 from .tool_calling import (
     apply_tool_prompt,
@@ -38,21 +46,184 @@ from .tool_calling import (
 
 _MAX_REQUEST_BYTES = 16 * 1024 * 1024
 _MAX_MEDIA_BYTES = 12 * 1024 * 1024
+# One /v1/embeddings call becomes one native batch, so the whole batch is
+# resident at once. This bounds it; clients chunk larger corpora anyway.
+_MAX_EMBEDDING_INPUTS = 2048
+# Reranking is a cross-encoder pass per document, so a batch costs far more
+# than the same number of embeddings.
+_MAX_RERANK_DOCUMENTS = 512
 
 
 def _completion_id() -> str:
     return 'chatcmpl-' + uuid.uuid4().hex[:24]
 
 
-def _with_clean_model_state(model, lock: threading.Lock, operation):
-    """Serialize one operation and guarantee clean KV state on both edges."""
+def _with_serialized_model(model, lock: threading.Lock, operation, *, reuse_prefix=True):
+    """Serialize one generation, dropping cached state only when it may be stale.
+
+    Cached KV is what makes multi-turn chat cheap: with n_past=0 the plugin
+    reuses the longest prefix shared with the previous transcript, so a resent
+    conversation only prefills its new suffix. Resetting on the way out threw
+    that away and made every turn re-prefill the whole transcript, which grows
+    with the conversation.
+
+    Nothing about the HTTP contract changes -- clients still send the full
+    transcript every time, and a prompt that does not extend the cached one
+    simply matches a shorter prefix. A failed or abandoned run is the one case
+    where the plugin's transcript may no longer mirror its KV, so that path
+    still resets.
+    """
 
     with lock:
-        model.reset()
         try:
-            return operation()
-        finally:
+            result = operation()
+        except BaseException:
             model.reset()
+            raise
+        if not reuse_prefix:
+            model.reset()
+        return result
+
+
+def _parse_embedding_request(req: dict) -> tuple[list[str] | list[list[int]], str]:
+    """Validate an OpenAI /v1/embeddings body.
+
+    Returns the inputs as either a list of strings or a list of token rows, and
+    the encoding format. `input` accepts all four OpenAI shapes: a string, an
+    array of strings, an array of tokens, or an array of token arrays.
+    """
+
+    value = req.get('input')
+    if isinstance(value, str):
+        if not value:
+            raise ValueError('input must be a non-empty string or array')
+        inputs: list[str] | list[list[int]] = [value]
+    elif isinstance(value, list) and value:
+        if all(isinstance(item, str) for item in value):
+            inputs = list(value)
+        elif all(isinstance(item, int) and not isinstance(item, bool) for item in value):
+            inputs = [list(value)]          # one pre-tokenized sequence
+        elif all(
+            isinstance(row, list)
+            and row
+            and all(isinstance(item, int) and not isinstance(item, bool) for item in row)
+            for row in value
+        ):
+            inputs = [list(row) for row in value]
+        else:
+            raise ValueError(
+                'input must be a string, an array of strings, an array of tokens, '
+                'or an array of token arrays'
+            )
+    else:
+        raise ValueError('input must be a non-empty string or array')
+
+    if len(inputs) > _MAX_EMBEDDING_INPUTS:
+        raise ValueError(f'input holds more than {_MAX_EMBEDDING_INPUTS} entries')
+    if any(isinstance(item, str) and '\x00' in item for item in inputs):
+        raise ValueError('input must not contain NUL bytes')
+
+    encoding_format = req.get('encoding_format', 'float')
+    if encoding_format not in ('float', 'base64'):
+        raise ValueError("encoding_format must be 'float' or 'base64'")
+
+    # Truncating a vector the model did not train for is silently wrong, and
+    # only some models (Matryoshka-trained) survive it, so refuse rather than
+    # guess. A client asking for the native width is fine and is checked once
+    # the width is known.
+    dimensions = req.get('dimensions')
+    if dimensions is not None and (
+        not isinstance(dimensions, int) or isinstance(dimensions, bool) or dimensions <= 0
+    ):
+        raise ValueError('dimensions must be a positive integer')
+
+    return inputs, encoding_format
+
+
+def _parse_rerank_request(req: dict) -> tuple[str, list[str], int | None, bool]:
+    """Validate a /v1/rerank body (the Cohere/Jina shape llama.cpp also serves)."""
+
+    query = req.get('query')
+    if not isinstance(query, str) or not query or '\x00' in query:
+        raise ValueError('query must be a non-empty NUL-free string')
+
+    raw = req.get('documents')
+    if not isinstance(raw, list) or not raw:
+        raise ValueError('documents must be a non-empty array')
+    if len(raw) > _MAX_RERANK_DOCUMENTS:
+        raise ValueError(f'documents holds more than {_MAX_RERANK_DOCUMENTS} entries')
+    documents: list[str] = []
+    for item in raw:
+        # Cohere's API accepts objects; its own clients send them.
+        text = item.get('text') if isinstance(item, dict) else item
+        if not isinstance(text, str) or not text or '\x00' in text:
+            raise ValueError(
+                'documents must hold non-empty NUL-free strings, or objects with a '
+                "non-empty 'text' string"
+            )
+        documents.append(text)
+
+    top_n = req.get('top_n')
+    if top_n is not None and (
+        not isinstance(top_n, int) or isinstance(top_n, bool) or top_n <= 0
+    ):
+        raise ValueError('top_n must be a positive integer')
+
+    return_documents = req.get('return_documents', False)
+    if not isinstance(return_documents, bool):
+        raise ValueError('return_documents must be a boolean')
+
+    return query, documents, top_n, return_documents
+
+
+def _relevance(score: float) -> float:
+    """Map a cross-encoder logit to (0, 1).
+
+    `relevance_score` means a 0..1 relevance to every client that speaks this
+    API, and a raw logit of -11 does not read as one. The sigmoid is what the
+    BGE reranker's own model card prescribes, and being monotonic it leaves the
+    ranking untouched. Raw logits stay available through UniRTEmbedding.rerank().
+    """
+
+    if score >= 0:
+        return 1.0 / (1.0 + math.exp(-score))
+    exponential = math.exp(score)       # exp(-score) overflows for very negative scores
+    return exponential / (1.0 + exponential)
+
+
+def _pad_token_rows(
+    model, rows: list[list[int]]
+) -> tuple[list[list[int]], list[list[int]], list[list[int]]]:
+    """Pad pre-tokenized rows to one rectangle, the way UniRTEmbedding._tokenize does.
+
+    The native encode ABI takes a rectangular batch. Text input gets padded
+    inside the model; token input arrives straight from the client, so it has
+    to be padded here, on the same side and with the same pad id.
+    """
+
+    width = max(len(row) for row in rows)
+    pad_id = model._pad_id
+    if any(len(row) != width for row in rows) and pad_id is None:
+        raise ValueError(
+            'token input rows have different lengths and this model has no padding token'
+        )
+    left = model._padding_side == 'left'
+    ids: list[list[int]] = []
+    masks: list[list[int]] = []
+    for row in rows:
+        pad = width - len(row)
+        fill = [pad_id or 0] * pad
+        ids.append(fill + list(row) if left else list(row) + fill)
+        masks.append([0] * pad + [1] * len(row) if left else [1] * len(row) + [0] * pad)
+    return ids, masks, [[0] * width for _ in rows]
+
+
+def _pack_embedding(vector: list[float], encoding_format: str) -> list[float] | str:
+    if encoding_format == 'float':
+        return vector
+    # OpenAI's base64 form, which its official Python client requests by
+    # default when numpy is installed: little-endian float32, packed.
+    return base64.b64encode(struct.pack(f'<{len(vector)}f', *vector)).decode('ascii')
 
 
 def _parse_generation_args(req: dict) -> dict:
@@ -325,6 +496,29 @@ class Handler(BaseHTTPRequestHandler):
             extra_headers={'Retry-After': '1'},
         )
 
+    def _read_json_body(self) -> dict | None:
+        """Read and parse one JSON object body, or answer the error and return None."""
+
+        try:
+            raw_length = self.headers.get('Content-Length')
+            if raw_length is None:
+                self._error(411, 'Content-Length is required')
+                return None
+            length = int(raw_length)
+            if length <= 0 or length > _MAX_REQUEST_BYTES:
+                self._error(
+                    413 if length > _MAX_REQUEST_BYTES else 400, 'invalid request body size'
+                )
+                return None
+            body = json.loads(self.rfile.read(length) or b'{}')
+        except (ValueError, json.JSONDecodeError) as exc:
+            self._error(400, f'bad request body: {exc}')
+            return None
+        if not isinstance(body, dict):
+            self._error(400, 'request body must be a JSON object')
+            return None
+        return body
+
     # ---- routes ----
 
     def do_OPTIONS(self):
@@ -338,14 +532,21 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         model_id = self.server.model_id
         if self.path == '/v1/models':
-            self._json(200, {
-                'object': 'list',
-                'data': [{'id': model_id, 'object': 'model', 'owned_by': 'unirt'}],
-            })
+            listed = [
+                {'id': name, 'object': 'model', 'owned_by': 'unirt'}
+                for name in (model_id, self.server.embedding_id, self.server.reranker_id)
+                if name is not None
+            ]
+            self._json(200, {'object': 'list', 'data': listed})
         elif self.path == '/v1/stats':
             # Not an OpenAI-standard endpoint: exposes runtime_stats() for
             # UIs/dashboards that want live device/memory info.
-            self._json(200, self.server.model.runtime_stats())
+            served = next(
+                handle
+                for handle in (self.server.model, self.server.embedding, self.server.reranker)
+                if handle is not None
+            )
+            self._json(200, served.runtime_stats())
         elif self.path in ('/', '/health'):
             self._json(200, {'status': 'ok', 'model': model_id})
         else:
@@ -353,24 +554,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         self._response_started = False
+        if self.path == '/v1/embeddings':
+            self._handle_embeddings()
+            return
+        if self.path == '/v1/rerank':
+            self._handle_rerank()
+            return
         if self.path != '/v1/chat/completions':
             self._error(404, f'unknown path {self.path}')
             return
-        try:
-            raw_length = self.headers.get('Content-Length')
-            if raw_length is None:
-                self._error(411, 'Content-Length is required')
-                return
-            length = int(raw_length)
-            if length <= 0 or length > _MAX_REQUEST_BYTES:
-                self._error(413 if length > _MAX_REQUEST_BYTES else 400, 'invalid request body size')
-                return
-            req = json.loads(self.rfile.read(length) or b'{}')
-        except (ValueError, json.JSONDecodeError) as e:
-            self._error(400, f'bad request body: {e}')
+        if self.server.model is None:
+            self._error(404, 'this server was started without a chat model (--model)')
             return
-        if not isinstance(req, dict):
-            self._error(400, 'request body must be a JSON object')
+        req = self._read_json_body()
+        if req is None:
             return
 
         try:
@@ -425,7 +622,12 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._blocking_completion(prompt, gen_kwargs, plan)
 
-            _with_clean_model_state(model, self.server.gen_lock, generate_response)
+            _with_serialized_model(
+                model,
+                self.server.gen_lock,
+                generate_response,
+                reuse_prefix=self.server.reuse_prefix,
+            )
         except (BrokenPipeError, ConnectionResetError):
             self.close_connection = True
         except Exception as exc:  # noqa: BLE001 — HTTP boundary
@@ -436,6 +638,121 @@ class Handler(BaseHTTPRequestHandler):
         finally:
             self.server.request_slots.release()
             prepared.cleanup()
+
+    def _handle_embeddings(self) -> None:
+        model = self.server.embedding
+        if model is None:
+            self._error(404, 'this server was started without an embedding model '
+                             '(--embedding-model)')
+            return
+        req = self._read_json_body()
+        if req is None:
+            return
+        try:
+            inputs, encoding_format = _parse_embedding_request(req)
+        except ValueError as exc:
+            self._error(400, str(exc))
+            return
+
+        if not self.server.request_slots.acquire(blocking=False):
+            self._busy()
+            return
+        try:
+            # Tokenizing here rather than calling encode() is what makes
+            # usage.prompt_tokens truthful: encode() tokenizes internally and
+            # reports nothing back. UniRTEmbedding serializes itself, so this
+            # deliberately does not take gen_lock -- embedding a corpus must not
+            # queue behind a long completion.
+            if isinstance(inputs[0], str):
+                ids, masks, types = model._tokenize(inputs)
+            else:
+                ids, masks, types = _pad_token_rows(model, inputs)
+            vectors = model.encode_tokens(ids, attention_mask=masks, token_type_ids=types)
+            tokens = sum(sum(row) for row in masks)
+
+            dimensions = req.get('dimensions')
+            if dimensions is not None and vectors and dimensions != len(vectors[0]):
+                self._error(
+                    400,
+                    f'this model emits {len(vectors[0])}-dimensional vectors; '
+                    f'dimensions={dimensions} would require truncation, which is '
+                    'only valid for Matryoshka-trained models',
+                )
+                return
+
+            self._json(200, {
+                'object': 'list',
+                'data': [
+                    {
+                        'object': 'embedding',
+                        'index': index,
+                        'embedding': _pack_embedding(vector, encoding_format),
+                    }
+                    for index, vector in enumerate(vectors)
+                ],
+                'model': self.server.embedding_id,
+                'usage': {'prompt_tokens': tokens, 'total_tokens': tokens},
+            })
+        except ValueError as exc:
+            self._error(400, str(exc))
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
+        except Exception as exc:  # noqa: BLE001 — HTTP boundary
+            if not self._response_started:
+                self._error(500, f'embedding failed: {exc}')
+            else:
+                self.close_connection = True
+        finally:
+            self.server.request_slots.release()
+
+    def _handle_rerank(self) -> None:
+        model = self.server.reranker
+        if model is None:
+            self._error(404, 'this server was started without a reranker (--rerank-model)')
+            return
+        req = self._read_json_body()
+        if req is None:
+            return
+        try:
+            query, documents, top_n, return_documents = _parse_rerank_request(req)
+        except ValueError as exc:
+            self._error(400, str(exc))
+            return
+
+        if not self.server.request_slots.acquire(blocking=False):
+            self._busy()
+            return
+        try:
+            scores = model.rerank(query, documents)
+            results = [
+                {'index': index, 'relevance_score': _relevance(score)}
+                for index, score in enumerate(scores)
+            ]
+            results.sort(key=lambda entry: entry['relevance_score'], reverse=True)
+            if top_n is not None:
+                results = results[:top_n]
+            if return_documents:
+                for entry in results:
+                    entry['document'] = {'text': documents[entry['index']]}
+            # No usage block: rerank tokenizes inside the plugin, which reports
+            # no token counts back, and inventing one would be worse than
+            # omitting it.
+            self._json(200, {
+                'object': 'list',
+                'model': self.server.reranker_id,
+                'results': results,
+            })
+        except ValueError as exc:
+            self._error(400, str(exc))
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
+        except Exception as exc:  # noqa: BLE001 — HTTP boundary
+            if not self._response_started:
+                self._error(500, f'rerank failed: {exc}')
+            else:
+                self.close_connection = True
+        finally:
+            self.server.request_slots.release()
 
     # ---- completion modes ----
 
@@ -529,9 +846,25 @@ class UniRTHTTPServer(ThreadingHTTPServer):
     block_on_close = True
     allow_reuse_address = True
 
-    def __init__(self, address, model, model_id: str, max_queued_requests: int = 8):
+    def __init__(
+        self,
+        address,
+        model,
+        model_id: str | None,
+        max_queued_requests: int = 8,
+        embedding=None,
+        embedding_id: str | None = None,
+        reuse_prefix: bool = True,
+        reranker=None,
+        reranker_id: str | None = None,
+    ):
         self.model = model
         self.model_id = model_id
+        self.embedding = embedding
+        self.embedding_id = embedding_id
+        self.reranker = reranker
+        self.reranker_id = reranker_id
+        self.reuse_prefix = reuse_prefix
         self.capabilities = model.capabilities() if isinstance(model, UniRTVLM) else None
         self.gen_lock = threading.Lock()
         # Generation itself is fully serialized by gen_lock (one model, one KV
@@ -543,11 +876,23 @@ class UniRTHTTPServer(ThreadingHTTPServer):
 
 
 def serve(
-    model, model_id: str, host: str, port: int, max_queued_requests: int = 8
+    model,
+    model_id: str | None,
+    host: str,
+    port: int,
+    max_queued_requests: int = 8,
+    embedding=None,
+    embedding_id: str | None = None,
+    reuse_prefix: bool = True,
+    reranker=None,
+    reranker_id: str | None = None,
 ) -> None:
     """Serve until interrupted, then stop accepting and join active requests."""
 
-    server = UniRTHTTPServer((host, port), model, model_id, max_queued_requests)
+    server = UniRTHTTPServer(
+        (host, port), model, model_id, max_queued_requests, embedding, embedding_id,
+        reuse_prefix, reranker, reranker_id,
+    )
     previous_handlers: dict[int, object] = {}
 
     def request_shutdown(_signum, _frame):
@@ -578,10 +923,30 @@ def main() -> None:
     ap = argparse.ArgumentParser(description='OpenAI-compatible server over a UniRT model')
     ap.add_argument(
         '--model',
-        required=True,
         help='local model path or Hugging Face repository id',
     )
     ap.add_argument('--backend', choices=['llama_cpp', 'mlx'], default='llama_cpp')
+    ap.add_argument(
+        '--embedding-model',
+        help='text encoder to serve at /v1/embeddings (local path or Hugging Face '
+             'repository id); may be given with or without --model',
+    )
+    ap.add_argument(
+        '--embedding-device',
+        default='auto',
+        help="device for the embedding model: auto, cpu, gpu, npu (default: auto)",
+    )
+    ap.add_argument(
+        '--rerank-model',
+        help='cross-encoder to serve at /v1/rerank (local path or Hugging Face '
+             'repository id). A reranker is a different model from an embedding '
+             'encoder, so this is a separate flag',
+    )
+    ap.add_argument(
+        '--rerank-device',
+        default='auto',
+        help='device for the reranker: auto, cpu, gpu, npu (default: auto)',
+    )
     ap.add_argument('--host', default='127.0.0.1')
     ap.add_argument('--port', type=int, default=8080)
     ap.add_argument(
@@ -589,6 +954,14 @@ def main() -> None:
         type=int,
         default=0,
         help='context window in tokens (0 = the model default)',
+    )
+    ap.add_argument(
+        '--no-prefix-cache',
+        action='store_true',
+        help='clear cached KV state after every request instead of letting the '
+             'next one reuse a shared prefix. Slower for multi-turn chat; the '
+             'escape hatch for the tiny numeric differences that reusing cached '
+             'KV can produce versus a cold prefill',
     )
     ap.add_argument(
         '--max-queued-requests',
@@ -602,26 +975,71 @@ def main() -> None:
         ap.error('--n-ctx must be >= 0')
     if args.max_queued_requests < 1:
         ap.error('--max-queued-requests must be >= 1')
+    if not args.model and not args.embedding_model and not args.rerank_model:
+        ap.error('at least one of --model, --embedding-model or --rerank-model is required')
 
-    model_source = os.path.abspath(args.model) if os.path.exists(args.model) else args.model
-    model_id = os.path.splitext(os.path.basename(args.model.rstrip('/')))[0]
-    print(f'loading {model_source} on {args.backend} ...')
-    model = AutoModelForCausalLM.from_pretrained(
-        model_source, device_map=args.backend, n_ctx=args.n_ctx
-    )
+    def _source_and_id(path: str) -> tuple[str, str]:
+        source = os.path.abspath(path) if os.path.exists(path) else path
+        return source, os.path.splitext(os.path.basename(path.rstrip('/')))[0]
+
+    model = None
+    model_id = None
+    embedding = None
+    embedding_id = None
+    reranker = None
+    reranker_id = None
+    served: list[str] = []
     try:
-        if isinstance(model, UniRTVLM):
-            capabilities = ', '.join(
-                name for name, supported in model.capabilities().items() if supported
-            ) or 'no media modality'
-            details = f'VLM: {capabilities}'
-        else:
-            stats = model.runtime_stats()
-            details = f"device: {stats['device_name'] or '?'}"
-        print(f'ready on http://{args.host}:{args.port}/v1  ({details})')
-        serve(model, model_id, args.host, args.port, args.max_queued_requests)
+        if args.model:
+            model_source, model_id = _source_and_id(args.model)
+            print(f'loading {model_source} on {args.backend} ...')
+            model = AutoModelForCausalLM.from_pretrained(
+                model_source, device_map=args.backend, n_ctx=args.n_ctx
+            )
+            if isinstance(model, UniRTVLM):
+                capabilities = ', '.join(
+                    name for name, supported in model.capabilities().items() if supported
+                ) or 'no media modality'
+                served.append(f'VLM: {capabilities}')
+            else:
+                stats = model.runtime_stats()
+                served.append(f"chat on {stats['device_name'] or '?'}")
+
+        if args.embedding_model:
+            embedding_source, embedding_id = _source_and_id(args.embedding_model)
+            print(f'loading {embedding_source} for embeddings ...')
+            embedding = AutoModelForEmbedding.from_pretrained(
+                embedding_source, device_map=args.embedding_device
+            )
+            stats = embedding.runtime_stats()
+            served.append(f"embeddings on {stats.get('device_name') or '?'}")
+
+        if args.rerank_model:
+            rerank_source, reranker_id = _source_and_id(args.rerank_model)
+            print(f'loading {rerank_source} for reranking ...')
+            reranker = AutoModelForEmbedding.from_pretrained(
+                rerank_source, device_map=args.rerank_device
+            )
+            stats = reranker.runtime_stats()
+            served.append(f"rerank on {stats.get('device_name') or '?'}")
+
+        print(f"ready on http://{args.host}:{args.port}/v1  ({'; '.join(served)})")
+        serve(
+            model,
+            model_id,
+            args.host,
+            args.port,
+            args.max_queued_requests,
+            embedding,
+            embedding_id,
+            not args.no_prefix_cache,
+            reranker,
+            reranker_id,
+        )
     finally:
-        model.close()
+        for handle in (model, embedding, reranker):
+            if handle is not None:
+                handle.close()
 
 
 if __name__ == '__main__':

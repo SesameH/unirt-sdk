@@ -20,25 +20,33 @@ Pick your platform:
 ## Python
 
 ```sh
-pip install unirt          # macOS arm64 wheel, native libraries included
+pip install unirt          # native libraries included, no toolchain needed
 unirt chat bartowski/SmolLM2-135M-Instruct-GGUF   # one-line interactive chat
 ```
 
+Wheels cover Python 3.10+ on macOS 14+ arm64, Linux x86_64 and arm64
+(`manylinux_2_31`, glibc 2.31+), and Windows 10+ x86_64 and arm64.
+
 ```python
-from unirt.auto import AutoModelForCausalLM
+from unirt import AutoModelForCausalLM
 
 model = AutoModelForCausalLM.from_pretrained("bartowski/SmolLM2-135M-Instruct-GGUF",
-                                              device_map="llama_cpp")
-print(model.generate("The capital of France is"))
+                                             device_map="llama_cpp")
+out = model.generate("The capital of France is", max_new_tokens=32)
+print(out.text)          # the reply; out.profile carries tokens/sec and timings
 ```
 
 Or run the bundled OpenAI-compatible server and point any OpenAI client
 (or [examples/chat.html](examples/chat.html)) at it:
 
 ```sh
-python3 -m unirt.server --model bartowski/SmolLM2-135M-Instruct-GGUF \
-  --backend llama_cpp --port 8080
+python3 -m unirt.server --model bartowski/SmolLM2-135M-Instruct-GGUF --port 8080
 ```
+
+It serves `/v1/chat/completions` (streaming SSE, tool calling, JSON-schema
+constrained output), and — given `--embedding-model` and `--rerank-model` —
+`/v1/embeddings` and `/v1/rerank`. Either retrieval flag works without
+`--model`, so a retrieval-only sidecar loads no chat model at all.
 
 See [python/README.md](python/README.md) for the full API.
 
@@ -54,7 +62,7 @@ dependencyResolutionManagement {
 }
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.SesameH:unirt-sdk:v0.2.0")
+    implementation("com.github.SesameH:unirt-sdk:v0.2.2")
 }
 ```
 
@@ -80,7 +88,7 @@ see its own README for build/emulator instructions.
 
 Clone the matching tag, download `unirt-ios-xcframework.zip` from its
 [Release](../../releases), unzip it into `ios/`, then add that `ios`
-directory as a **local** Swift package dependency. The v0.2.0 tag does not
+directory as a **local** Swift package dependency. The tag does not
 contain the binary, so adding only the remote repository URL is not enough.
 See [ios/README.md](ios/README.md) for exact commands and Xcode steps.
 
@@ -96,10 +104,15 @@ device signing instructions.
 The public C ABI (`include/unirt.h`) and every language binding
 (`python/`, `android/`, `ios/`) are ordinary open wrapper code — read
 them, fork them, file issues against them. What's not in this repo: the
-C++ bridge that implements `unirt.h`, the backend plugins (llama.cpp /
-MLX / ONNX Runtime integration), and the build system that produces the
-native libraries these bindings link against. Those ship only as
-compiled binaries, attached to each [Release](../../releases).
+C++ bridge that implements `unirt.h`, the backend plugins, and the build
+system that produces the native libraries these bindings link against.
+Those ship only as compiled binaries, attached to each
+[Release](../../releases).
+
+The published binaries carry the **llama_cpp** runtime (GGUF: LLM, VLM,
+embeddings, rerank), built for a generic CPU baseline plus Metal on macOS —
+no CUDA, no Vulkan. The MLX and ONNX Runtime plugins are not distributed.
+`unirt devices` lists what an install actually has.
 
 ## License
 

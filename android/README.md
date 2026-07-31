@@ -23,7 +23,7 @@ Then add the release tag to the app module:
 ```kotlin
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.SesameH:unirt-sdk:v0.2.0")
+    implementation("com.github.SesameH:unirt-sdk:v0.2.2")
 }
 ```
 
@@ -37,7 +37,7 @@ arm64 device/emulator; an x86_64 emulator cannot load the native libraries.
 ## Use the downloaded AAR directly
 
 Alternatively, download `unirt-android.aar` from the
-[v0.2.0 Release](https://github.com/SesameH/unirt-sdk/releases/tag/v0.2.0),
+[v0.2.2 Release](https://github.com/SesameH/unirt-sdk/releases/tag/v0.2.2),
 place it at `app/libs/unirt-android.aar`, and add:
 
 ```kotlin
@@ -63,10 +63,10 @@ set. Extract the native libraries from the published AAR, discard its JNI
 bridge, and rebuild that bridge from this checkout:
 
 ```sh
-git checkout v0.2.0
+git checkout v0.2.2
 cd android
 curl -fL -o unirt-android.aar \
-  https://github.com/SesameH/unirt-sdk/releases/download/v0.2.0/unirt-android.aar
+  https://github.com/SesameH/unirt-sdk/releases/download/v0.2.2/unirt-android.aar
 mkdir -p prebuilt/arm64-v8a
 unzip -jo unirt-android.aar 'jni/arm64-v8a/*.so' -d prebuilt/arm64-v8a
 rm prebuilt/arm64-v8a/libunirt_jni.so
