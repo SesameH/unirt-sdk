@@ -446,15 +446,23 @@ def _cmd_rerank(arguments: argparse.Namespace) -> int:
         scores = model.rerank(arguments.query, arguments.documents)
     finally:
         model.close()
-    ranked = sorted(zip(scores, arguments.documents), key=lambda pair: pair[0], reverse=True)
+    # Rank by score but carry each document's original position along: looking
+    # the index up afterwards with list.index() returns the first equal string,
+    # so two identical documents both reported the lower index and the other
+    # one never appeared.
+    ranked = sorted(
+        ((score, index, text) for index, (score, text) in enumerate(zip(scores, arguments.documents))),
+        key=lambda entry: entry[0],
+        reverse=True,
+    )
     if arguments.json:
         print(json.dumps(
-            [{'index': arguments.documents.index(text), 'score': score, 'document': text}
-             for score, text in ranked],
+            [{'index': index, 'score': score, 'document': text}
+             for score, index, text in ranked],
             ensure_ascii=False,
         ))
         return 0
-    for score, text in ranked:
+    for score, _index, text in ranked:
         print(f'{score:9.4f}  {text}')
     return 0
 
@@ -465,9 +473,14 @@ def _cmd_serve(arguments: argparse.Namespace) -> int:
     from . import server as _server
 
     forwarded: list[str] = []
-    for name in ('model', 'backend', 'embedding_model', 'embedding_device',
+    # `model` is a list here (several may be served) and one --model per entry
+    # is what the server expects.
+    for entry in getattr(arguments, 'model', None) or []:
+        forwarded += ['--model', str(entry)]
+    for name in ('backend', 'draft_model', 'embedding_model', 'embedding_device',
                  'rerank_model', 'rerank_device', 'host', 'port', 'n_ctx',
-                 'api_key', 'max_queued_requests'):
+                 'api_key', 'max_queued_requests', 'slots', 'slot_timeout',
+                 'max_resident_models', 'model_idle_timeout'):
         value = getattr(arguments, name, None)
         if value is not None:
             forwarded += [f"--{name.replace('_', '-')}", str(value)]
@@ -715,8 +728,10 @@ def _build_parser() -> argparse.ArgumentParser:
         'serve',
         help='Run the OpenAI-compatible HTTP server',
     )
-    serve.add_argument('model', nargs='?', help='Chat model; optional if a '
-                                                'retrieval model is given')
+    serve.add_argument('model', nargs='*', metavar='[NAME=]MODEL',
+                       help='Chat model; optional if a retrieval model is '
+                            'given. Repeat it to serve several, which the '
+                            '"model" field of a request then picks between')
     serve.add_argument('--backend', choices=['llama_cpp', 'mlx'], default='llama_cpp')
     serve.add_argument('--embedding-model', help='Text encoder for /v1/embeddings')
     serve.add_argument('--embedding-device', default='auto')
@@ -727,7 +742,18 @@ def _build_parser() -> argparse.ArgumentParser:
     serve.add_argument('--n-ctx', type=int, default=0)
     serve.add_argument('--api-key', help='Require Authorization: Bearer <key>')
     serve.add_argument('--no-prefix-cache', action='store_true')
+    serve.add_argument('--slots', type=int, default=1,
+                       help='requests that may decode at the same time')
+    serve.add_argument('--draft-model',
+                       help='small same-vocabulary model that proposes tokens '
+                            'for the chat model to verify (speculative decoding)')
+    serve.add_argument('--slot-timeout', type=float, default=120.0)
     serve.add_argument('--max-queued-requests', type=int, default=8)
+    serve.add_argument('--max-resident-models', type=int, default=0,
+                       help='models that may be loaded at once (0: no limit)')
+    serve.add_argument('--model-idle-timeout', type=float, default=0.0,
+                       help='seconds before an unused model is given back '
+                            '(0: never)')
     serve.set_defaults(func=_cmd_serve)
 
     listing = commands.add_parser('ls', help='List cached models or show one manifest')

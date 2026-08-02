@@ -169,6 +169,35 @@ typedef void (*unirt_log_callback)(unirt_LogLevel, const char*);
  */
 typedef bool (*unirt_token_callback)(const char* token, void* user_data);
 
+/**
+ * One token's log-probability. `piece` is that token's bytes, which may be an
+ * incomplete UTF-8 sequence — a token is not a character, and no rejoining is
+ * possible here because these are alternatives that were never emitted.
+ */
+typedef struct {
+    const char* piece;    /* Token bytes, NUL-terminated, not necessarily valid UTF-8 */
+    int32_t     token_id; /* Vocabulary id */
+    float       logprob;  /* Natural log of the model's probability for this token */
+} unirt_Logprob;
+
+/**
+ * Per-token log-probability callback, invoked once per generated token when
+ * unirt_GenerationConfig::logprobs is set, immediately before the matching
+ * on_token call.
+ *
+ * `entries[0]` is the token that was actually sampled; entries[1..count-1] are
+ * the most likely alternatives at that step, most likely first. The array and
+ * every `piece` inside it are valid only for the duration of the call.
+ *
+ * The probabilities are the model's own, taken before any sampler or grammar
+ * touches the distribution — so they do not change when temperature, top_p or
+ * a JSON schema does, which is what makes them usable as a confidence signal.
+ *
+ * Return true to keep generating, false to stop early, exactly like on_token.
+ */
+typedef bool (*unirt_logprob_callback)(
+    const unirt_Logprob* entries, int32_t count, void* user_data);
+
 /* ========================================================================== */
 /*  Runtime lifecycle                                                         */
 /* ========================================================================== */
@@ -477,6 +506,17 @@ typedef struct {
      * the option. */
     bool    sliding_window;
     int32_t sliding_window_n_keep; /* Anchored head tokens when sliding (0 = plugin default of 4) */
+    /* Report the log-probability of each generated token through
+     * unirt_LlmGenerateInput::on_logprob. 0 = off (and the per-token softmax
+     * is skipped entirely); N > 0 also reports the N most likely alternatives
+     * that step. Capped by the plugin at the vocabulary size. */
+    int32_t logprobs;
+    /* Tokens the draft model proposes per verification round when one was
+     * loaded (unirt_LlmCreateInput::draft_model_path). 0 = the plugin's
+     * default, < 0 = speculation off for this request. Ignored when no draft
+     * model is attached. Larger is not better: every rejected token is work
+     * the target model did and threw away. */
+    int32_t n_draft;
 } unirt_GenerationConfig;
 
 /**
@@ -513,6 +553,13 @@ typedef struct {
     unirt_ModelConfig config;         /** Load-time settings */
     unirt_PluginId    plugin_id;      /** Backend to load the model with */
     const char*        device_id;      /** Concrete device id; NULL = plugin default */
+    /** A small model of the same vocabulary, used to propose tokens that this
+     *  model then verifies in one batch (speculative decoding). Optional; NULL
+     *  disables it. The plugin loads and owns it -- it is an implementation
+     *  detail of this handle, not a second model the caller can talk to.
+     *  Rejected at load time if its vocabulary differs, since the proposals
+     *  would be meaningless token ids. */
+    unirt_Path        draft_model_path;
 } unirt_LlmCreateInput;
 
 /**
@@ -654,6 +701,10 @@ typedef struct {
      *  nothing is inserted automatically. */
     const int32_t* input_ids;       /** Pre-tokenized prompt (optional, may be NULL) */
     int32_t        input_ids_count; /** Number of ids in input_ids */
+
+    /** Per-token log-probabilities; ignored unless config->logprobs > 0.
+     *  Receives the same user_data as on_token. */
+    unirt_logprob_callback on_logprob;
 } unirt_LlmGenerateInput;
 
 /** Result of one generation run. */
